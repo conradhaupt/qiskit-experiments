@@ -100,3 +100,5 @@ from .nodes import (
 
 from .data_processor import DataProcessor
 from .sklearn_discriminators import SkLDA
+
+from .plotters import IQPlotter, BasePlotter

@@ -34,13 +34,15 @@ https://pypi.org/project/uncertainties/
 
 """
 
-from typing import Dict, List, Set, Tuple, Union, Any
+from typing import Dict, List, Set, Tuple, Union, Any, Type
 
 import numpy as np
 from uncertainties import unumpy as unp
+from matplotlib.pyplot import Figure
 
 from qiskit_experiments.data_processing.data_action import DataAction, TrainableDataAction
 from qiskit_experiments.data_processing.exceptions import DataProcessorError
+from qiskit_experiments.data_processing.plotters import BasePlotter
 
 
 class DataProcessor:
@@ -62,17 +64,29 @@ class DataProcessor:
         self,
         input_key: str,
         data_actions: List[DataAction] = None,
+        data_plotters: List[Tuple[str, BasePlotter]] = None,
     ):
         """Create a chain of data processing actions.
+
+        :py:attr:`data_plotters` is a list of tuples where the first element is the name of the
+        :py:class:`DataAction` class which which the plotter is associated. Plotters will be passed the
+        output of ``DataActions`` when their class name matches this string. For example, the following
+        ``DataProcessor`` is a chain of two nodes of types NodeA and NodeB. An instance of Plotter1 will
+        plot a figure for the output of the NodeA node in the data-processing chain.
+
+        .. code-block:: python
+            data_proc = DataProcessor("memory", [NodeA(), NodeB()], [("NodeA", Plotter1()),])
 
         Args:
             input_key: The initial key in the datum Dict[str, Any] under which the data processor
                 will find the data to process.
             data_actions: A list of data processing actions to construct this data processor with.
                 If nothing is given the processor returns unprocessed data.
+            data_plotters: A list of data plotters to generate figures from the output of nodes.
         """
         self._input_key = input_key
         self._nodes = data_actions if data_actions else []
+        self._plotters = data_plotters if data_plotters else []
 
     def append(self, node: DataAction):
         """
@@ -93,7 +107,9 @@ class DataProcessor:
 
         return True
 
-    def __call__(self, data: Union[Dict, List[Dict]], **options) -> np.ndarray:
+    def __call__(
+        self, data: Union[Dict, List[Dict]], **options
+    ) -> Tuple[np.ndarray, List[Figure], List[np.ndarray]]:
         """
         Call self on the given datum. This method sequentially calls the stored data actions
         on the datum.
@@ -112,7 +128,7 @@ class DataProcessor:
 
     def call_with_history(
         self, data: Union[Dict, List[Dict]], history_nodes: Set = None
-    ) -> Tuple[np.ndarray, List]:
+    ) -> Tuple[np.ndarray, List[Figure], List[np.ndarray]]:
         """
         Call self on the given datum. This method sequentially calls the stored data actions
         on the datum and also returns the history of the processed data.
@@ -135,9 +151,10 @@ class DataProcessor:
         self,
         data: Union[Dict, List[Dict]],
         with_history: bool = False,
+        with_plotting: bool = True,
         history_nodes: Set = None,
         call_up_to_node: int = None,
-    ) -> Union[np.ndarray, Tuple[np.ndarray, List]]:
+    ) -> Tuple[np.ndarray, List[np.ndarray], List[Figure]]:
         """Process the data with or without storing the history of the computation.
 
         Args:
@@ -161,22 +178,20 @@ class DataProcessor:
 
         data = self._data_extraction(data)
 
-        history = []
+        history = {}
         for index, node in enumerate(self._nodes[:call_up_to_node]):
             data = node(data)
 
-            if with_history and (history_nodes is None or index in history_nodes):
+            if with_history or with_plotting:
                 if data.shape[0] == 1:
                     cache_data = data[0]
                 else:
                     cache_data = data
-                history.append(
-                    (
-                        node.__class__.__name__,
+                if with_plotting or history_nodes is None or index in history_nodes:
+                    history[node.__class__.__name__] = (
                         cache_data,
                         index,
                     )
-                )
 
         # Return only first entry if len(data) == 1, e.g. [[0, 1]] -> [0, 1]
         if data.shape[0] == 1:
@@ -184,10 +199,12 @@ class DataProcessor:
         else:
             out_data = data
 
-        if with_history:
-            return out_data, history
-        else:
-            return out_data
+        figures = []
+        for plotter_data_action, plotter in self._plotters:
+            if plotter_data_action in history:
+                figures.append(plotter(history[plotter_data_action][0]))
+
+        return out_data, history, figures
 
     def train(self, data: Union[Dict, List[Dict]]):
         """Train the nodes of the data processor.
